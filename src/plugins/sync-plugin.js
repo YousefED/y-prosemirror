@@ -221,7 +221,7 @@ export class ProsemirrorBinding {
     this._domSelectionInView = null
   }
 
-  _getOrLoadRef =  (el /*xmlElement*/) => {
+  _getOrLoadRef (el /*xmlElement*/) {
     if (!this.refMapping.has(el)) {
       this.refMapping.set(el, "loading");
       this.resolveRef(el).then(element => {
@@ -245,17 +245,15 @@ export class ProsemirrorBinding {
 
         this.refMapping.set(el, element);
         element.observeDeep((events, transaction) => {
+          const delType = (_, type) => this.mapping.delete(type)
+          transaction.changed.forEach(delType)
+          transaction.changedParentTypes.forEach(delType)
           raiseObservers();
         });
         
-        raiseObservers();
-
-       
-
-        
-        
+        this.mapping.delete(element); // should not be in there, but just in case
+        raiseObservers(); 
       });
-      
     }
     return this.refMapping.get(el);
     // listeners
@@ -309,7 +307,7 @@ export class ProsemirrorBinding {
   unrenderSnapshot () {
     this.mapping = new Map()
     this.mux(() => {
-      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef.bind(this))).filter(n => n !== null)
       // @ts-ignore
       const tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       tr.setMeta(ySyncPluginKey, { snapshot: null, prevSnapshot: null })
@@ -320,7 +318,7 @@ export class ProsemirrorBinding {
   _forceRerender () {
     this.mapping = new Map()
     this.mux(() => {
-      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef.bind(this))).filter(n => n !== null)
       // @ts-ignore
       const tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       this.prosemirrorView.dispatch(tr)
@@ -393,7 +391,7 @@ export class ProsemirrorBinding {
       Y.iterateDeletedStructs(transaction, transaction.deleteSet, struct => struct.constructor === Y.Item && this.mapping.delete(/** @type {Y.ContentType} */ (/** @type {Y.Item} */ (struct).content).type))
       transaction.changed.forEach(delType)
       transaction.changedParentTypes.forEach(delType)
-      const fragmentContent = this.type.toArray().map(t => createNodeIfNotExists(/** @type {Y.XmlElement | Y.XmlHook} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeIfNotExists(/** @type {Y.XmlElement | Y.XmlHook} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef.bind(this))).filter(n => n !== null)
       // @ts-ignore
       let tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       restoreRelativeSelection(tr, this.beforeTransactionSelection, this)
@@ -408,7 +406,7 @@ export class ProsemirrorBinding {
   _prosemirrorChanged (doc) {
     this.mux(() => {
       this.doc.transact(() => {
-        updateYFragment(this.doc, this.type, doc, this.mapping, this._getOrLoadRef)
+        updateYFragment(this.doc, this.type, doc, this.mapping, this._getOrLoadRef.bind(this))
         this.beforeTransactionSelection = getRelativeSelection(this, this.prosemirrorView.state)
       }, ySyncPluginKey)
     })
