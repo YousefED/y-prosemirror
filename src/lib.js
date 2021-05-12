@@ -202,7 +202,7 @@ export function prosemirrorToYDoc (doc, xmlFragment = 'prosemirror') {
     return ydoc
   }
 
-  updateYFragment(type.doc, type, doc, new Map())
+  updateYFragment(type.doc, type, doc, new Map(), () => { return "loading" })
   return type.doc
 }
 

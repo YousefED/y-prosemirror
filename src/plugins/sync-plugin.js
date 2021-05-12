@@ -70,10 +70,11 @@ const getUserColor = (colorMapping, colors, user) => {
  *
  * This plugin also keeps references to the type and the shared document so other plugins can access it.
  * @param {Y.XmlFragment} yXmlFragment
+ * @param {any} resolveRef
  * @param {YSyncOpts} opts
  * @return {any} Returns a prosemirror plugin that binds to this type
  */
-export const ySyncPlugin = (yXmlFragment, { colors = defaultColors, colorMapping = new Map(), permanentUserData = null } = {}) => {
+export const ySyncPlugin = (yXmlFragment, resolveRef, { colors = defaultColors, colorMapping = new Map(), permanentUserData = null } = {}) => {
   let changedInitialContent = false
   const plugin = new Plugin({
     props: {
@@ -128,7 +129,7 @@ export const ySyncPlugin = (yXmlFragment, { colors = defaultColors, colorMapping
       }
     },
     view: view => {
-      const binding = new ProsemirrorBinding(yXmlFragment, view)
+      const binding = new ProsemirrorBinding(yXmlFragment, view, resolveRef)
       // Make sure this is called in a separate context
       setTimeout(() => {
         binding._forceRerender()
@@ -182,8 +183,10 @@ export class ProsemirrorBinding {
   /**
    * @param {Y.XmlFragment} yXmlFragment The bind source
    * @param {any} prosemirrorView The target binding
+   * @param {(el: Y.XmlElement) => Promise<Y.XmlElement>} resolveRef The target binding
    */
-  constructor (yXmlFragment, prosemirrorView) {
+  constructor (yXmlFragment, prosemirrorView, resolveRef) {
+    this.resolveRef = resolveRef
     this.type = yXmlFragment
     this.prosemirrorView = prosemirrorView
     this.mux = createMutex()
@@ -191,6 +194,7 @@ export class ProsemirrorBinding {
      * @type {ProsemirrorMapping}
      */
     this.mapping = new Map()
+    this.refMapping = new Map()
     this._observeFunction = this._typeChanged.bind(this)
     /**
      * @type {Y.Doc}
@@ -215,6 +219,46 @@ export class ProsemirrorBinding {
     yXmlFragment.observeDeep(this._observeFunction)
 
     this._domSelectionInView = null
+  }
+
+  _getOrLoadRef =  (el /*xmlElement*/) => {
+    if (!this.refMapping.has(el)) {
+      this.refMapping.set(el, "loading");
+      this.resolveRef(el).then(element => {
+        const raiseObservers = () => {
+           // this._typeChanged(["refChange"], {
+          //   deleteSet: [],
+          //   changed: [],
+          //   changedParentTypes: el
+          // })
+
+          // indirect way of calling _typeChanged
+          const tr = new Y.Transaction(this.doc, "ref", true);
+          el._callObserver(tr, []);
+          tr.changedParentTypes.forEach((events, type) => {
+            const listeners = type._dEH.l;
+            listeners.forEach(l => {
+              l(events, tr);
+            })
+          });
+        }
+
+        this.refMapping.set(el, element);
+        element.observeDeep((events, transaction) => {
+          raiseObservers();
+        });
+        
+        raiseObservers();
+
+       
+
+        
+        
+      });
+      
+    }
+    return this.refMapping.get(el);
+    // listeners
   }
 
   _isLocalCursorInView () {
@@ -265,7 +309,7 @@ export class ProsemirrorBinding {
   unrenderSnapshot () {
     this.mapping = new Map()
     this.mux(() => {
-      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
       // @ts-ignore
       const tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       tr.setMeta(ySyncPluginKey, { snapshot: null, prevSnapshot: null })
@@ -276,7 +320,7 @@ export class ProsemirrorBinding {
   _forceRerender () {
     this.mapping = new Map()
     this.mux(() => {
-      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeFromYElement(/** @type {Y.XmlElement} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
       // @ts-ignore
       const tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       this.prosemirrorView.dispatch(tr)
@@ -349,7 +393,7 @@ export class ProsemirrorBinding {
       Y.iterateDeletedStructs(transaction, transaction.deleteSet, struct => struct.constructor === Y.Item && this.mapping.delete(/** @type {Y.ContentType} */ (/** @type {Y.Item} */ (struct).content).type))
       transaction.changed.forEach(delType)
       transaction.changedParentTypes.forEach(delType)
-      const fragmentContent = this.type.toArray().map(t => createNodeIfNotExists(/** @type {Y.XmlElement | Y.XmlHook} */ (t), this.prosemirrorView.state.schema, this.mapping)).filter(n => n !== null)
+      const fragmentContent = this.type.toArray().map(t => createNodeIfNotExists(/** @type {Y.XmlElement | Y.XmlHook} */ (t), this.prosemirrorView.state.schema, this.mapping, this._getOrLoadRef)).filter(n => n !== null)
       // @ts-ignore
       let tr = this.prosemirrorView.state.tr.replace(0, this.prosemirrorView.state.doc.content.size, new PModel.Slice(new PModel.Fragment(fragmentContent), 0, 0))
       restoreRelativeSelection(tr, this.beforeTransactionSelection, this)
@@ -364,7 +408,7 @@ export class ProsemirrorBinding {
   _prosemirrorChanged (doc) {
     this.mux(() => {
       this.doc.transact(() => {
-        updateYFragment(this.doc, this.type, doc, this.mapping)
+        updateYFragment(this.doc, this.type, doc, this.mapping, this._getOrLoadRef)
         this.beforeTransactionSelection = getRelativeSelection(this, this.prosemirrorView.state)
       }, ySyncPluginKey)
     })
@@ -387,11 +431,11 @@ export class ProsemirrorBinding {
  * @param {function('removed' | 'added', Y.ID):any} [computeYChange]
  * @return {PModel.Node | null}
  */
-const createNodeIfNotExists = (el, schema, mapping, snapshot, prevSnapshot, computeYChange) => {
+const createNodeIfNotExists = (el, schema, mapping, getOrLoadRef, snapshot, prevSnapshot, computeYChange) => {
   const node = /** @type {PModel.Node} */ (mapping.get(el))
   if (node === undefined) {
     if (el instanceof Y.XmlElement) {
-      return createNodeFromYElement(el, schema, mapping, snapshot, prevSnapshot, computeYChange)
+      return createNodeFromYElement(el, schema, mapping, getOrLoadRef, snapshot, prevSnapshot, computeYChange)
     } else {
       throw error.methodUnimplemented() // we are currently not handling hooks
     }
@@ -409,11 +453,12 @@ const createNodeIfNotExists = (el, schema, mapping, snapshot, prevSnapshot, comp
  * @param {function('removed' | 'added', Y.ID):any} [computeYChange]
  * @return {PModel.Node | null} Returns node if node could be created. Otherwise it deletes the yjs type and returns null
  */
-const createNodeFromYElement = (el, schema, mapping, snapshot, prevSnapshot, computeYChange) => {
+const createNodeFromYElement = (el, schema, mapping, getOrLoadRef, snapshot, prevSnapshot, computeYChange) => {
+  
   const children = []
   const createChildren = type => {
     if (type.constructor === Y.XmlElement) {
-      const n = createNodeIfNotExists(type, schema, mapping, snapshot, prevSnapshot, computeYChange)
+      const n = createNodeIfNotExists(type, schema, mapping, getOrLoadRef, snapshot, prevSnapshot, computeYChange)
       if (n !== null) {
         children.push(n)
       }
@@ -428,7 +473,13 @@ const createNodeFromYElement = (el, schema, mapping, snapshot, prevSnapshot, com
       }
     }
   }
-  if (snapshot === undefined || prevSnapshot === undefined) {
+  if (el.nodeName === "ref") {
+    const ref = getOrLoadRef(el)
+    if (ref && ref !== "loading") {
+      createChildren(ref);
+      // ref.toArray().forEach(createChildren);
+    }
+  } else if (snapshot === undefined || prevSnapshot === undefined) {
     el.toArray().forEach(createChildren)
   } else {
     Y.typeListToArraySnapshot(el, new Y.Snapshot(prevSnapshot.ds, snapshot.sv)).forEach(createChildren)
@@ -512,7 +563,7 @@ const createTypeFromTextNodes = (nodes, mapping) => {
  * @param {ProsemirrorMapping} mapping
  * @return {Y.XmlElement}
  */
-const createTypeFromElementNode = (node, mapping) => {
+const createTypeFromElementNode = (node, mapping, getOrLoadRef) => {
   const type = new Y.XmlElement(node.type.name)
   for (const key in node.attrs) {
     const val = node.attrs[key]
@@ -520,7 +571,14 @@ const createTypeFromElementNode = (node, mapping) => {
       type.setAttribute(key, val)
     }
   }
-  type.insert(0, normalizePNodeContent(node).map(n => createTypeFromTextOrElementNode(n, mapping)))
+  if (node.type.name === "ref") {
+    const ref = getOrLoadRef(type); 
+    if (ref !== "loading") {
+      // noop
+    }
+  } else {
+    type.insert(0, normalizePNodeContent(node).map(n => createTypeFromTextOrElementNode(n, mapping, getOrLoadRef)))
+  }
   mapping.set(type, node)
   return type
 }
@@ -531,7 +589,7 @@ const createTypeFromElementNode = (node, mapping) => {
  * @param {ProsemirrorMapping} mapping
  * @return {Y.XmlElement|Y.XmlText}
  */
-const createTypeFromTextOrElementNode = (node, mapping) => node instanceof Array ? createTypeFromTextNodes(node, mapping) : createTypeFromElementNode(node, mapping)
+const createTypeFromTextOrElementNode = (node, mapping, getOrLoadRef) => node instanceof Array ? createTypeFromTextNodes(node, mapping) : createTypeFromElementNode(node, mapping, getOrLoadRef)
 
 const equalAttrs = (pattrs, yattrs) => {
   const keys = Object.keys(pattrs).filter(key => pattrs[key] !== null)
@@ -695,9 +753,34 @@ const marksToAttributes = marks => {
  * @param {any} pNode
  * @param {ProsemirrorMapping} mapping
  */
-export const updateYFragment = (y, yDomFragment, pNode, mapping) => {
+export const updateYFragment = (y, yDomFragment, pNode, mapping, getOrLoadRef) => {
   if (yDomFragment instanceof Y.XmlElement && yDomFragment.nodeName !== pNode.type.name) {
     throw new Error('node name mismatch!')
+  }
+  if (pNode.type.name === "ref") {
+    const ref = getOrLoadRef(yDomFragment);
+
+    const refFragment = yDomFragment;
+    yDomFragment = {
+      insert: function() {
+        throw new Error("unexpected");
+      },
+      delete: function() {
+        throw new Error("unexpected");
+      },
+      getAttributes: function() {
+        return refFragment.getAttributes.apply(refFragment, arguments);
+      }, 
+      setAttribute: function() {
+        return refFragment.setAttribute.apply(refFragment, arguments);
+      },
+      removeAttribute: function() {
+        return refFragment.removeAttribute.apply(refFragment, arguments);
+      },
+      toArray: function() {
+        return ref !== "loading" ?  [ref] : [];
+      }
+    }
   }
   mapping.set(yDomFragment, pNode)
   // update attributes
@@ -784,14 +867,14 @@ export const updateYFragment = (y, yDomFragment, pNode, mapping) => {
           }
         }
         if (updateLeft) {
-          updateYFragment(y, /** @type {Y.XmlFragment} */ (leftY), /** @type {PModel.Node} */ (leftP), mapping)
+          updateYFragment(y, /** @type {Y.XmlFragment} */ (leftY), /** @type {PModel.Node} */ (leftP), mapping, getOrLoadRef)
           left += 1
         } else if (updateRight) {
-          updateYFragment(y, /** @type {Y.XmlFragment} */ (rightY), /** @type {PModel.Node} */ (rightP), mapping)
+          updateYFragment(y, /** @type {Y.XmlFragment} */ (rightY), /** @type {PModel.Node} */ (rightP), mapping, getOrLoadRef)
           right += 1
         } else {
           yDomFragment.delete(left, 1)
-          yDomFragment.insert(left, [createTypeFromTextOrElementNode(leftP, mapping)])
+          yDomFragment.insert(left, [createTypeFromTextOrElementNode(leftP, mapping, getOrLoadRef)])
           left += 1
         }
       }
@@ -803,7 +886,7 @@ export const updateYFragment = (y, yDomFragment, pNode, mapping) => {
     if (left + right < pChildCnt) {
       const ins = []
       for (let i = left; i < pChildCnt - right; i++) {
-        ins.push(createTypeFromTextOrElementNode(pChildren[i], mapping))
+        ins.push(createTypeFromTextOrElementNode(pChildren[i], mapping, getOrLoadRef))
       }
       yDomFragment.insert(left, ins)
     }
