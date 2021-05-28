@@ -183,7 +183,7 @@ export class ProsemirrorBinding {
   /**
    * @param {Y.XmlFragment} yXmlFragment The bind source
    * @param {any} prosemirrorView The target binding
-   * @param {(el: Y.XmlElement) => Promise<Y.XmlElement>} resolveRef The target binding
+   * @param {(el: Y.XmlElement, attrs: any) => Promise<Y.XmlElement>} resolveRef The target binding
    */
   constructor (yXmlFragment, prosemirrorView, resolveRef) {
     this.resolveRef = resolveRef
@@ -221,10 +221,10 @@ export class ProsemirrorBinding {
     this._domSelectionInView = null
   }
 
-  _getOrLoadRef (el /*xmlElement*/) {
+  _getOrLoadRef (el /*xmlElement*/, attrs) {
     if (!this.refMapping.has(el)) {
       this.refMapping.set(el, "loading");
-      this.resolveRef(el).then(element => {
+      this.resolveRef(el, attrs).then(element => {
         const raiseObservers = () => {
            // this._typeChanged(["refChange"], {
           //   deleteSet: [],
@@ -382,7 +382,7 @@ export class ProsemirrorBinding {
       this.renderSnapshot(syncState.snapshot, syncState.prevSnapshot)
       return
     }
-    this.mux(() => {
+    const func = () => {
       /**
        * @param {any} _
        * @param {Y.AbstractType} type
@@ -400,7 +400,12 @@ export class ProsemirrorBinding {
         tr.scrollIntoView()
       }
       this.prosemirrorView.dispatch(tr)
-    })
+    }
+    if (transaction.origin === "ref") {
+      func();
+    } else {
+      this.mux(func);
+    }
   }
 
   _prosemirrorChanged (doc) {
@@ -570,7 +575,7 @@ const createTypeFromElementNode = (node, mapping, getOrLoadRef) => {
     }
   }
   if (node.type.name === "ref") {
-    const ref = getOrLoadRef(type); 
+    const ref = getOrLoadRef(type, node.attrs); 
     if (ref !== "loading") {
       // noop
     }
@@ -644,7 +649,7 @@ const equalYTextPText = (ytext, ptexts) => {
 const equalYTypePNode = (ytype, pnode) => {
   if (ytype instanceof Y.XmlElement && !(pnode instanceof Array) && matchNodeName(ytype, pnode)) {
     const normalizedContent = normalizePNodeContent(pnode)
-    return ytype._length === normalizedContent.length && equalAttrs(ytype.getAttributes(), pnode.attrs) && ytype.toArray().every((ychild, i) => equalYTypePNode(ychild, normalizedContent[i]))
+    return (ytype._length === normalizedContent.length) && equalAttrs(ytype.getAttributes(), pnode.attrs) && ytype.toArray().every((ychild, i) => equalYTypePNode(ychild, normalizedContent[i]))
   }
   return ytype instanceof Y.XmlText && pnode instanceof Array && equalYTextPText(ytype, pnode)
 }
@@ -653,7 +658,13 @@ const equalYTypePNode = (ytype, pnode) => {
  * @param {PModel.Node | Array<PModel.Node> | undefined} mapped
  * @param {PModel.Node | Array<PModel.Node>} pcontent
  */
-const mappedIdentity = (mapped, pcontent) => mapped === pcontent || (mapped instanceof Array && pcontent instanceof Array && mapped.length === pcontent.length && mapped.every((a, i) => pcontent[i] === a))
+const mappedIdentity = (mapped, pcontent) => {
+  if (mapped && !Array.isArray(mapped) && !Array.isArray(pcontent) && mapped.type.name === "ref" && pcontent.type.name === "ref") {
+    // TODO: might not be necessary
+    return  mapped === pcontent || mapped.eq(pcontent);  
+  }
+  return mapped === pcontent || (mapped instanceof Array && pcontent instanceof Array && mapped.length === pcontent.length && mapped.every((a, i) => pcontent[i] === a))
+}
 
 /**
  * @param {Y.XmlElement} ytype
