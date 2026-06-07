@@ -1,6 +1,6 @@
 import * as d from 'lib0/delta'
 import { ySyncPluginKey, yUndoPluginKey } from './keys.js'
-import { deltaToPSteps, deltaAttributionToFormat, nodeToDelta, deltaToPNode } from './sync-utils.js'
+import { deltaToPSteps, deltaAttributionToFormat, nodeToDelta, deltaToPNode, identityTransform } from './sync-utils.js'
 import * as Y from '@y/y'
 import { absolutePositionToRelativePosition } from './positions.js'
 
@@ -47,15 +47,16 @@ export const configureYProsemirror = (opts = {}) => (state, dispatch) => {
     const tr = state.tr.setMeta(ySyncPluginKey, opts)
     tr.setMeta('addToHistory', false)
     if (ytype) {
+      const transform = pluginState.transform || identityTransform
       /**
        * @type {ProsemirrorDelta}
        */
-      const ycontent = deltaAttributionToFormat(ytype.toDeltaDeep(attributionManager || Y.noAttributionsManager), pluginState.attributionMapper)
+      const ycontent = /** @type {ProsemirrorDelta} */ (transform.toView(deltaAttributionToFormat(ytype.toDeltaDeep(attributionManager || Y.noAttributionsManager), pluginState.attributionMapper).done()))
       // @todo it is preferred to apply the minimal diff - at least for debugging purposes. the
       // document replacal is more reliable though
       if (debugging) {
         const pcontent = nodeToDelta(tr.doc, undefined, true)
-        const diff = d.diff(pcontent.done(), ycontent.done())
+        const diff = d.diff(pcontent.done(), ycontent)
         deltaToPSteps(tr, diff, undefined, undefined, pluginState.attributedNodes)
       } else {
         tr.replaceWith(0, tr.doc.content.size, deltaToPNode(ycontent, tr.doc.type.schema, null, pluginState.attributedNodes))

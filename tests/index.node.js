@@ -10,6 +10,7 @@ import * as positions from './positions.test.js'
 import * as suggestions from './suggestions.test.js'
 import * as suggestionSimulation from './suggestion-simulation.test.js'
 import * as attributedNodes from './attributed-nodes.test.js'
+import * as transform from './transform.test.js'
 import * as undo from './undo.test.js'
 import * as commands from './commands.test.js'
 // import * as tr from './tr.test.js'
@@ -60,6 +61,7 @@ runTests({
   suggestions,
   suggestionSimulation,
   attributedNodes,
+  transform,
   undo,
   commands
   // prosemirror,
