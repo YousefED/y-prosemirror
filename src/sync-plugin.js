@@ -47,25 +47,6 @@ export const $syncPluginStateUpdate = s.$object({
 })
 const $maybeSyncPluginStateUpdate = $syncPluginStateUpdate.nullable
 
-// ===== TEMP DIAGNOSTIC (remove me) =====
-// Pretty-print a lib0 delta tree for crash diagnostics.
-/**
- * @param {d.DeltaAny} dlt
- * @param {string} ind
- * @returns {string}
- */
-const _ypmDiagPP = (dlt, ind = '') => {
-  let s = ''
-  const tag = /** @type {any} */ (dlt).attribution ? (' <' + Object.keys(/** @type {any} */ (dlt).attribution).join(',') + '>') : ''
-  const attrs = [...dlt.attrs].map((a) => a.key + '=' + JSON.stringify(a.value) + (/** @type {any} */ (a).attribution ? '*' + Object.keys(/** @type {any} */ (a).attribution).join(',') : ''))
-  s += ind + (dlt.name || '(root)') + (attrs.length ? '{' + attrs.join(',') + '}' : '') + tag + '\n'
-  for (const op of dlt.children) {
-    if (d.$deleteOp.check(op)) { s += ind + '  DEL(' + op.delete + ')\n' } else if (d.$textOp.check(op)) { s += ind + '  "' + op.insert + '"\n' } else if (d.$insertOp.check(op)) { for (const it of op.insert) { s += d.$deltaAny.check(it) ? _ypmDiagPP(it, ind + '  ') : (ind + '  "' + it + '"\n') } } else if (d.$retainOp.check(op)) { s += ind + '  RET(' + op.retain + ')\n' } else if (d.$modifyOp.check(op)) { s += ind + '  MOD\n' + _ypmDiagPP(op.value, ind + '    ') }
-  }
-  return s
-}
-// ===== END TEMP DIAGNOSTIC =====
-
 const attributedDeleteMark = 'y-attributed-delete'
 const attributionMarkNames = [
   'y-attributed-insert',
@@ -303,22 +284,9 @@ export function syncPlugin (opts = {}) {
           const pcontent = transform.toStore(nodeToDelta(view.state.doc, undefined, true).done())
           const pmToYDiff = stripAttributionFormattingFromDelta(d.diff(ycontent, pcontent))
           if (!pmToYDiff.isEmpty()) {
-            try {
-              /** @type {Y.Doc} */ (ytype.doc).transact(() => {
-                ytype.applyDelta(pmToYDiff, am)
-              }, ySyncPluginKey.get(view.state))
-            } catch (e) {
-              // ===== TEMP DIAGNOSTIC (remove me) =====
-              // Capture the exact structures when the PM->Y diff fails to
-              // apply, so we can see how the rendered/branch shapes diverge.
-              console.error('[y/prosemirror DIAG] applyDelta threw:', /** @type {Error} */ (e).message)
-              console.error('[y/prosemirror DIAG] pmToYDiff:\n' + _ypmDiagPP(pmToYDiff))
-              console.error('[y/prosemirror DIAG] branch raw Y (no AM):\n' + _ypmDiagPP(ytype.toDelta()))
-              console.error('[y/prosemirror DIAG] branch AM-rendered:\n' + _ypmDiagPP(ytype.toDeltaDeep(am)))
-              console.error('[y/prosemirror DIAG] PM doc:\n' + view.state.doc.toString())
-              // ===== END TEMP DIAGNOSTIC =====
-              throw e
-            }
+            /** @type {Y.Doc} */ (ytype.doc).transact(() => {
+              ytype.applyDelta(pmToYDiff, am)
+            }, ySyncPluginKey.get(view.state))
           }
           const desiredPM = transform.toView(deltaAttributionToFormat(
             ytype.toDeltaDeep(am),
