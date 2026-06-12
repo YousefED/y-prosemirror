@@ -6,6 +6,7 @@ import {
   defaultMapAttributionToMark,
   deltaAttributionToFormat,
   deltaToPSteps,
+  identityTransform,
   nodeToDelta
 } from './sync-utils.js'
 import * as d from 'lib0/delta'
@@ -28,7 +29,12 @@ export const $syncPluginState = s.$object({
    * Predicate deciding which attributed nodes render under their
    * `{nodeName}--attributed` variant. See {@link syncPlugin}.
    */
-  attributedNodes: /** @type {s.Schema<AttributedNodesPredicate>} */ (s.$function)
+  attributedNodes: /** @type {s.Schema<AttributedNodesPredicate>} */ (s.$function),
+  /**
+   * Bijective PM<->Y delta transform ({@link YpmTransform}). Lets the Y
+   * representation differ from the PM representation. See {@link syncPlugin}.
+   */
+  transform: /** @type {s.Schema<YpmTransform>} */ (s.$object({ toStore: s.$function, toView: s.$function }))
 })
 
 export const $syncPluginStateUpdate = s.$object({
@@ -36,6 +42,7 @@ export const $syncPluginStateUpdate = s.$object({
   attributionManager: Y.$attributionManager.nullable.optional,
   attributionMapper: /** @type {s.Schema<AttributionMapper>} */ (s.$function).nullable.optional,
   attributedNodes: /** @type {s.Schema<AttributedNodesPredicate>} */ (s.$function).nullable.optional,
+  transform: /** @type {s.Schema<YpmTransform>} */ (s.$object({ toStore: s.$function, toView: s.$function })).nullable.optional,
   change: /** @type {s.Schema<Y.YEvent<any>>} */ (s.$any).nullable.optional
 })
 const $maybeSyncPluginStateUpdate = $syncPluginStateUpdate.nullable
@@ -107,6 +114,7 @@ const stripAttributionFormattingFromDelta = (input) => {
  * @param {Y.Doc} [opts.suggestionDoc] A {@link Y.Doc} to use for suggestion tracking
  * @param {AttributionMapper} [opts.mapAttributionToMark] A function to map the {@link Y.Attribution} to a {@link import('prosemirror-model').Mark} - the mark names *must* be one of: `y-attributed-insert`, `y-attributed-delete`, `y-attributed-format`. No other mark names are permitted
  * @param {AttributedNodesPredicate} [opts.attributedNodes] Optional predicate `(nodeName, kinds) => boolean`. When it returns `true` for an attributed node *and* a `{nodeName}--attributed` type exists in the schema, that node is rendered under the variant type (the `y-attributed-*` marks are still applied). `kinds` is `{ insert?, delete?, format? }`. The variant is a pure rendering concern - the canonical name is what is stored in the Y document. The predicate must be deterministic in `(nodeName, kinds)`.
+ * @param {YpmTransform} [opts.transform] Optional bijective PM<->Y delta transform. `toStore` rewrites the PM-representation delta into the Y-representation before it is applied to the CRDT; `toView` rewrites the Y-representation back into the PM representation before rendering. Lets storage diverge from the editor schema - e.g. store a block's type as an attribute so a type change is an attribute change in Y (no schema-invalid sibling content). Must be a deterministic inverse pair.
  * @returns {Plugin}
  */
 export function syncPlugin (opts = {}) {
@@ -118,7 +126,8 @@ export function syncPlugin (opts = {}) {
           ytype: null,
           attributionManager: null,
           attributionMapper: opts.mapAttributionToMark || defaultMapAttributionToMark,
-          attributedNodes: opts.attributedNodes || defaultAttributedNodes
+          attributedNodes: opts.attributedNodes || defaultAttributedNodes,
+          transform: opts.transform || identityTransform
         })
       },
       apply: (tr, prevPluginState) => {
@@ -140,8 +149,9 @@ export function syncPlugin (opts = {}) {
        * @param {Y.AbstractAttributionManager?} opts.attributionManager
        * @param {AttributionMapper} opts.attributionMapper
        * @param {AttributedNodesPredicate} opts.attributedNodes
+       * @param {YpmTransform} opts.transform
        */
-      function subscribeToYType ({ view, ytype, attributionManager, attributionMapper, attributedNodes }) {
+      function subscribeToYType ({ view, ytype, attributionManager, attributionMapper, attributedNodes, transform }) {
         unsubscribeFn?.()
         if (ytype != null) {
           // Listen on the doc's `afterTransaction` event rather than
@@ -175,10 +185,10 @@ export function syncPlugin (opts = {}) {
             // more expensive per update but is the only diff target all
             // peers agree on.
             const am = attributionManager || Y.noAttributionsManager
-            const desiredPM = deltaAttributionToFormat(
+            const desiredPM = transform.toView(deltaAttributionToFormat(
               ytype.toDeltaDeep(am),
               attributionMapper
-            ).done()
+            ).done())
             const pcontent = nodeToDelta(view.state.doc, undefined, true).done()
             const diff = d.diff(pcontent, desiredPM)
             if (diff.isEmpty()) return
@@ -203,10 +213,10 @@ export function syncPlugin (opts = {}) {
             // targeted-rerender optimization in exchange for going through
             // the same path that the rest of the plugin uses, which keeps
             // the deltas shallow (only what actually changed).
-            const desiredPM = deltaAttributionToFormat(
+            const desiredPM = transform.toView(deltaAttributionToFormat(
               ytype.toDeltaDeep(attributionManager || Y.noAttributionsManager),
               attributionMapper
-            ).done()
+            ).done())
             const pcontent = nodeToDelta(view.state.doc, undefined, true).done()
             const diff = d.diff(pcontent, desiredPM)
             if (diff.isEmpty()) return
@@ -246,7 +256,8 @@ export function syncPlugin (opts = {}) {
               ytype,
               attributionManager,
               attributionMapper: pluginState.attributionMapper,
-              attributedNodes: pluginState.attributedNodes
+              attributedNodes: pluginState.attributedNodes,
+              transform: pluginState.transform
             })
           }
           if (ytype == null) return
@@ -263,21 +274,24 @@ export function syncPlugin (opts = {}) {
           const am = attributionManager || Y.noAttributionsManager
           const mapper = pluginState.attributionMapper
           const attributedNodes = pluginState.attributedNodes
+          const transform = pluginState.transform
+          // PM->Y diff is computed in the *Y* representation: render Y as-is and
+          // map the canonical PM doc into the storage shape via `transform.toStore`.
           const ycontent = deltaAttributionToFormat(
             ytype.toDeltaDeep(am),
             mapper
           ).done()
-          const pcontent = nodeToDelta(view.state.doc, undefined, true).done()
+          const pcontent = transform.toStore(nodeToDelta(view.state.doc, undefined, true).done())
           const pmToYDiff = stripAttributionFormattingFromDelta(d.diff(ycontent, pcontent))
           if (!pmToYDiff.isEmpty()) {
             /** @type {Y.Doc} */ (ytype.doc).transact(() => {
               ytype.applyDelta(pmToYDiff, am)
             }, ySyncPluginKey.get(view.state))
           }
-          const desiredPM = deltaAttributionToFormat(
+          const desiredPM = transform.toView(deltaAttributionToFormat(
             ytype.toDeltaDeep(am),
             mapper
-          ).done()
+          ).done())
           const pcontentAfter = nodeToDelta(view.state.doc, undefined, true).done()
           const pmReconcileDiff = d.diff(pcontentAfter, desiredPM)
           if (pmReconcileDiff.isEmpty()) return

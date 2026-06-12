@@ -16,6 +16,12 @@ declare type AttributionMapper = (format: Record<string,unknown> | null, attribu
  * node. Must be deterministic in `(nodeName, kinds)`.
  */
 declare type AttributedNodesPredicate = (nodeName: string, kinds: { insert?: boolean, delete?: boolean, format?: boolean }) => boolean
+/**
+ * Bijective PM<->Y delta transform. `toStore` maps the ProseMirror-representation
+ * delta into the Yjs storage representation; `toView` maps it back for rendering.
+ * Must be deterministic inverses on content.
+ */
+declare type YpmTransform = { toStore: (d: import('lib0/delta').DeltaAny) => import('lib0/delta').DeltaAny, toView: (d: import('lib0/delta').DeltaAny) => import('lib0/delta').DeltaAny }
 declare type SyncPluginState = import('lib0/schema').Unwrap<typeof import('@y/prosemirror').$syncPluginState>
 declare type SyncPluginStateUpdate = import('lib0/schema').Unwrap<typeof import('@y/prosemirror').$syncPluginStateUpdate>
 declare type ProsemirrorDelta = import('lib0/schema').Unwrap<typeof import('@y/prosemirror').$prosemirrorDelta>

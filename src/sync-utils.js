@@ -38,6 +38,29 @@ export const ATTRIBUTED_SUFFIX = '--attributed'
 export const defaultAttributedNodes = () => false
 
 /**
+ * A user-land storage transform: a bijective pair of delta rewrites that map
+ * between the ProseMirror representation (what the editor renders) and the Yjs
+ * representation (what is stored in the CRDT). `toStore` runs on the PM->Y path
+ * (after {@link nodeToDelta}), `toView` on the Y->PM path (after
+ * `toDeltaDeep`/`toDelta`). They must be inverses on content.
+ *
+ * This lets an integrator store, say, a block's *type* as an attribute on a
+ * generic node rather than as a node name - so a type change becomes an
+ * attribute change in Y (no node delete+insert, hence no schema-invalid sibling
+ * content), while the editor still renders distinct `paragraph`/`heading` nodes.
+ *
+ * See the global {@link YpmTransform} typedef in `global.d.ts`.
+ */
+
+/**
+ * The no-op transform: PM and Y share the same representation. Compared by
+ * reference so call sites can cheaply detect "no transform configured".
+ *
+ * @type {YpmTransform}
+ */
+export const identityTransform = { toStore: d => d, toView: d => d }
+
+/**
  * Strip the {@link ATTRIBUTED_SUFFIX} so a PM node name maps back to the
  * canonical name stored in the Y document. Identity for canonical names.
  *
@@ -139,12 +162,28 @@ export const defaultMapAttributionToMark = (format, attribution) => {
 
 /**
  * Transform delta with attributions to delta with formats (marks).
+ *
  * @param {delta.DeltaAny} d
  * @param {function} attributionsToFormat
+ * @param {boolean} [nodeDeleted] Whether the node `d` itself is a deletion
+ *   tombstone (its enclosing insert carried a `delete` attribution). When the
+ *   whole node is deleted, its attributes belong to the tombstone and are kept;
+ *   only an attribute that is *individually* removed from an otherwise-kept node
+ *   is dropped (see the attr loop).
  */
-export const deltaAttributionToFormat = (d, attributionsToFormat) => {
+export const deltaAttributionToFormat = (d, attributionsToFormat, nodeDeleted = false) => {
   const r = delta.create(d.name, $prosemirrorDelta)
   for (const attr of d.attrs) {
+    // An attribute the AM surfaces only to mark it *removed* in the branch
+    // carries a `delete` attribution and still reads back its old value (it
+    // lives on `base`, not the suggested doc). On an otherwise-kept node it is
+    // not a live attribute, so do not surface it: rendering its old value is
+    // wrong, and if the (possibly type-changed) node cannot even hold that
+    // attribute, the PM->Y diff re-issues a delete the AM keeps re-surfacing ->
+    // a reconcile loop. The removal is conveyed by the surrounding change, not a
+    // live attr. (When the *whole node* is deleted, `nodeDeleted` is set and we
+    // keep the attrs - they are part of the rendered tombstone.)
+    if (!nodeDeleted && /** @type {any} */ (attr).attribution != null && /** @type {any} */ (attr).attribution.delete != null) continue
     // @ts-ignore
     r.attrs[attr.key] = attr.clone()
   }
@@ -153,15 +192,19 @@ export const deltaAttributionToFormat = (d, attributionsToFormat) => {
       r.delete(child.delete)
     } else {
       const format = child.attribution ? attributionsToFormat(child.format, child.attribution) : child.format
+      // A node is a deletion tombstone if its own op (or an ancestor) carries a
+      // `delete` attribution - propagate that into the recursion so its attrs
+      // are kept rather than dropped.
+      const childDeleted = nodeDeleted || (/** @type {any} */ (child).attribution != null && /** @type {any} */ (child).attribution.delete != null)
       if (delta.$insertOp.check(child)) {
-        r.insert(child.insert.map(c => delta.$deltaAny.check(c) ? deltaAttributionToFormat(c, attributionsToFormat) : c), format)
+        r.insert(child.insert.map(c => delta.$deltaAny.check(c) ? deltaAttributionToFormat(c, attributionsToFormat, childDeleted) : c), format)
       } else if (delta.$textOp.check(child)) {
         r.insert(child.insert, format)
       } else if (delta.$retainOp.check(child)) {
         r.retain(child.retain, format)
       } else if (delta.$modifyOp.check(child)) {
         // @ts-ignore
-        r.modify(/** @type {any} */ (deltaAttributionToFormat(child.value, attributionsToFormat)), format)
+        r.modify(/** @type {any} */ (deltaAttributionToFormat(child.value, attributionsToFormat, childDeleted)), format)
       } else {
         error.unexpectedCase()
       }
